@@ -113,9 +113,10 @@ app = FastAPI(title="AI Portfolio Backend", lifespan=lifespan)
 # Cho phép frontend Vite (dev server) gọi API từ trình duyệt.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Cho phép tất cả các nguồn (bao gồm cả link Vercel của bạn) gọi vào
+    allow_credentials=True,
+    allow_methods=["*"],  # Cho phép mọi phương thức (POST, GET, OPTIONS,...)
+    allow_headers=["*"],  # Cho phép mọi loại Headers
 )
 
 
