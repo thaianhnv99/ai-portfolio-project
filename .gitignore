@@ -1,0 +1,7 @@
+backend/venv/
+backend/.env
+backend/__pycache__/
+backend/chroma_db/
+backend/faiss_index/
+frontend/node_modules/
+frontend/.env.local
