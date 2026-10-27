@@ -1,12 +1,15 @@
+import hashlib
 import os
+import unicodedata
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import redis.asyncio as redis
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from google.genai.errors import APIError
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import FAISS
@@ -16,6 +19,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_google_genai._common import GoogleGenerativeAIError
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, StringConstraints
+from redis.exceptions import RedisError
 
 load_dotenv()  # nạp GOOGLE_API_KEY (key từ Google AI Studio) từ .env
 
@@ -29,6 +33,9 @@ TOP_K = 4  # số đoạn văn liên quan nhất đưa vào prompt
 EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.5-flash-lite")
 EMPTY_REPLY = "Mình chưa tạo được câu trả lời cho câu hỏi này, bạn thử diễn đạt lại nhé."
+
+CACHE_TTL = 86400  # 24 giờ
+REDIS_TIMEOUT = 2  # giây; Redis chậm/chết thì bỏ qua cache chứ không để treo request
 
 SYSTEM_PROMPT = """Bạn là trợ lý AI của một portfolio cá nhân.
 Chỉ trả lời dựa trên phần NGỮ CẢNH bên dưới (trích từ CV và bài blog của chủ portfolio).
@@ -97,6 +104,47 @@ def build_vectorstore():
     return vectorstore
 
 
+def cache_prefix() -> str:
+    """Tiền tố key Redis gắn với model, prompt và nội dung data/.
+
+    Sửa CV/blog, đổi model hoặc đổi prompt thì prefix đổi theo, các câu trả lời cũ
+    trong Redis tự không còn được dùng (rồi hết hạn theo TTL) thay vì phục vụ nội dung lỗi thời.
+    """
+    digest = hashlib.sha256((CHAT_MODEL + SYSTEM_PROMPT).encode())
+    for pattern in ("*.pdf", "*.txt"):
+        for path in sorted(DATA_DIR.glob(pattern)):
+            digest.update(path.name.encode())
+            digest.update(path.read_bytes())
+    return f"chat:{digest.hexdigest()[:12]}:"
+
+
+def cache_key(prefix: str, message: str) -> str:
+    # Chuẩn hóa để "Bạn là AI?" và "  bạn  là ai? " dùng chung một entry. NFC để chữ
+    # tiếng Việt gõ ở các bàn phím/thiết bị khác nhau ra cùng một chuỗi; băm để key luôn ngắn.
+    normalized = " ".join(unicodedata.normalize("NFC", message).casefold().split())
+    return prefix + hashlib.sha256(normalized.encode()).hexdigest()
+
+
+# Cache chỉ là tối ưu hóa: Redis lỗi/chậm thì ghi log rồi chạy tiếp như cache miss, không làm hỏng /api/chat.
+async def cache_get(client, key: str) -> str | None:
+    if client is None:
+        return None
+    try:
+        return await client.get(key)
+    except RedisError as exc:
+        print(f"[cache] Lỗi Redis khi đọc: {exc!r}")
+        return None
+
+
+async def cache_set(client, key: str, value: str) -> None:
+    if client is None:
+        return
+    try:
+        await client.set(key, value, ex=CACHE_TTL)
+    except RedisError as exc:
+        print(f"[cache] Lỗi Redis khi ghi: {exc!r}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Index và tạo client một lần lúc khởi động, các request /api/chat chỉ việc tra cứu.
@@ -105,7 +153,34 @@ async def lifespan(app: FastAPI):
     app.state.chain = (
         prompt | ChatGoogleGenerativeAI(model=CHAT_MODEL) | StrOutputParser()
     )
+
+    # from_url chỉ tạo client (kết nối lười), nên ping để biết ngay lúc khởi động Redis có sống không.
+    # Không có REDIS_URL hoặc Redis chết thì server vẫn chạy, chỉ là không có cache.
+    app.state.cache_prefix = cache_prefix()
+    redis_url = os.getenv("REDIS_URL")
+    app.state.redis = (
+        redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=REDIS_TIMEOUT,
+            socket_timeout=REDIS_TIMEOUT,
+        )
+        if redis_url
+        else None
+    )
+    if app.state.redis is None:
+        print("[cache] Thiếu REDIS_URL, chạy không có cache")
+    else:
+        try:
+            await app.state.redis.ping()
+            print("[cache] Redis sẵn sàng")
+        except RedisError as exc:
+            print(f"[cache] Chưa kết nối được Redis, sẽ thử lại ở từng request: {exc!r}")
+
     yield
+
+    if app.state.redis is not None:
+        await app.state.redis.aclose()
 
 
 app = FastAPI(title="AI Portfolio Backend", lifespan=lifespan)
@@ -117,6 +192,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  # Cho phép mọi phương thức (POST, GET, OPTIONS,...)
     allow_headers=["*"],  # Cho phép mọi loại Headers
+    expose_headers=["X-Cache"],  # Để JS ở trình duyệt đọc được res.headers.get("X-Cache")
 )
 
 
@@ -166,6 +242,13 @@ async def chat(body: ChatRequest, request: Request):
     if vectorstore is None:
         raise HTTPException(status_code=503, detail="Chưa có dữ liệu nào trong thư mục data/.")
 
+    # Cache hit: trả luôn, bỏ qua cả bước embedding câu hỏi lẫn lời gọi Gemini.
+    redis_client = request.app.state.redis
+    key = cache_key(request.app.state.cache_prefix, body.message)
+    cached = await cache_get(redis_client, key)
+    if cached is not None:
+        return PlainTextResponse(cached, headers={"X-Cache": "HIT"})
+
     try:
         # Tìm các đoạn văn gần nghĩa nhất với câu hỏi
         relevant = await vectorstore.asimilarity_search(body.message, k=TOP_K)
@@ -191,14 +274,26 @@ async def chat(body: ChatRequest, request: Request):
             yield EMPTY_REPLY
             return
 
+        # Vừa stream cho người dùng vừa gom lại để lưu cache khi stream kết thúc.
+        parts = [first]
         yield first
         try:
             async for chunk in stream:
                 if chunk:
+                    parts.append(chunk)
                     yield chunk
         except (GoogleGenerativeAIError, APIError) as exc:
             # Đã gửi một phần câu trả lời nên không thể trả HTTP lỗi, chỉ báo ngay trong luồng.
             print(f"[chat] Lỗi Gemini giữa chừng: {exc!r}")
             yield "\n\n[Kết nối tới Gemini bị gián đoạn, câu trả lời có thể chưa đầy đủ.]"
+            return  # câu trả lời dở dang thì không cache
 
-    return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
+        # Chỉ chạy tới đây khi stream hoàn tất. Nếu client ngắt kết nối giữa chừng,
+        # generator bị đóng ở một lệnh yield phía trên nên câu trả lời cụt cũng không được cache.
+        await cache_set(redis_client, key, "".join(parts))
+
+    return StreamingResponse(
+        token_stream(),
+        media_type="text/plain; charset=utf-8",
+        headers={"X-Cache": "MISS"},
+    )
