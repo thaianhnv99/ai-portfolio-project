@@ -566,10 +566,14 @@ html {
   background: var(--code-bg);
 }
 
+/* color + font-family ghim lại vì theme Prism của khung chat (prism-tomorrow.css) đặt chữ xám nhạt
+   cho mọi `code.language-*` trong trang, kể cả code block ở đây */
 .pf-md pre code {
   display: block;
   padding: 0;
   background: none;
+  color: var(--text-h);
+  font-family: var(--mono);
   font-size: 13px;
   line-height: 1.55;
   white-space: pre;

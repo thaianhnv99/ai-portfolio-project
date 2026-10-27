@@ -13,6 +13,7 @@
   --cw-error-bg: #fef2f2;
   --cw-error-text: #b91c1c;
   --cw-error-border: #fecaca;
+  --cw-mono: ui-monospace, 'SF Mono', Consolas, monospace;
   --cw-shadow:
     0 12px 32px rgba(0, 0, 0, 0.18), 0 4px 10px rgba(0, 0, 0, 0.08);
 
@@ -217,6 +218,140 @@
   background: var(--cw-error-bg);
   color: var(--cw-error-text);
   outline: 1px solid var(--cw-error-border);
+}
+
+/* Câu trả lời Markdown của AI. Khoảng cách giữa các khối do .cw-md tự quản nên bỏ pre-wrap
+   của bong bóng (nếu không, ký tự xuống dòng giữa các thẻ HTML sẽ thành dòng trống thừa). */
+.cw-bubble--md {
+  max-width: 92%;
+  white-space: normal;
+}
+
+.cw-md > :first-child {
+  margin-top: 0;
+}
+
+.cw-md > :last-child {
+  margin-bottom: 0;
+}
+
+.cw-md p,
+.cw-md ul,
+.cw-md ol,
+.cw-md blockquote,
+.cw-md-table {
+  margin: 0 0 8px;
+}
+
+/* Giữ xuống dòng đơn trong đoạn như tin nhắn thuần (Markdown mặc định gộp thành khoảng trắng) */
+.cw-md p {
+  white-space: pre-wrap;
+}
+
+.cw-md ul,
+.cw-md ol {
+  padding-left: 20px;
+}
+
+.cw-md li + li {
+  margin-top: 2px;
+}
+
+.cw-md li > p {
+  margin: 0;
+}
+
+/* Ghi đè h1/h2 toàn cục (cỡ chữ to, màu riêng): trong bong bóng chat mọi tiêu đề chỉ là chữ đậm */
+.cw-md h1,
+.cw-md h2,
+.cw-md h3,
+.cw-md h4,
+.cw-md h5,
+.cw-md h6 {
+  margin: 12px 0 4px;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: normal;
+}
+
+.cw-md a {
+  color: var(--cw-accent);
+  text-decoration: underline;
+}
+
+.cw-md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--cw-border);
+  color: var(--cw-muted);
+}
+
+.cw-md hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--cw-border);
+}
+
+/* `code` toàn cục dùng inline-flex + padding riêng; ghi đè để code trong câu xuống dòng được.
+   :not(pre) > để không đụng tới code nằm trong khối code (do theme Prism tô màu). */
+.cw-md :not(pre) > code {
+  display: inline;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--cw-bg);
+  color: inherit;
+  font-family: var(--cw-mono);
+  font-size: 0.9em;
+  line-height: inherit;
+  overflow-wrap: anywhere;
+}
+
+/* Khối code: nền tối, màu chữ và màu token lấy từ prism-tomorrow.css. Dùng `.cw .cw-md` để
+   chắc chắn thắng `pre[class*='language-']` của theme dù CSS nào được nạp trước. */
+.cw .cw-md pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12); /* tách khối code khỏi nền bubble ở dark mode */
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  /* Thanh cuộn ngang mảnh, track trong suốt để không lòi nền sáng dưới khối code tối */
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 transparent;
+}
+
+.cw .cw-md pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  font-family: var(--cw-mono);
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.cw-md-table {
+  overflow-x: auto;
+}
+
+.cw-md table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cw-md th,
+.cw-md td {
+  padding: 4px 8px;
+  border: 1px solid var(--cw-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.cw-md th {
+  background: var(--cw-bg);
+  font-weight: 600;
 }
 
 /* "AI đang suy nghĩ..." */

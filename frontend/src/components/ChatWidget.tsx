@@ -28,6 +28,8 @@ interface ChatMessage {
   role: Role;
   text: string;
   isError?: boolean;
+  // Câu trả lời của AI từ server là Markdown; lời chào và thông báo lỗi là chữ thuần
+  markdown?: boolean;
 }
 
 interface ChatRequest {
@@ -169,6 +171,11 @@ function ChatWidget() {
   const [messages, setMessages] = useState<ChatMessage[]>([GREETING]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  // react-markdown + Prism khá nặng mà đa số khách không mở chat, nên chỉ tải khi mở khung chat
+  // lần đầu (trước khi câu trả lời đầu tiên về). Tải hỏng thì tin AI vẫn hiện như chữ thuần.
+  const [MarkdownView, setMarkdownView] = useState<
+    typeof import("./ChatMarkdown").default | null
+  >(null);
   const nextId = useRef(1);
   const wasOpen = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -192,9 +199,20 @@ function ChatWidget() {
     wasOpen.current = open;
   }, [open]);
 
-  function addMessage(role: Role, text: string, isError = false) {
+  useEffect(() => {
+    if (!open) return;
+    import("./ChatMarkdown")
+      .then((mod) => setMarkdownView(() => mod.default))
+      .catch((err) => console.warn("[chat] Không tải được bộ render Markdown", err));
+  }, [open]);
+
+  function addMessage(
+    role: Role,
+    text: string,
+    flags: Pick<ChatMessage, "isError" | "markdown"> = {},
+  ) {
     const id = nextId.current++;
-    setMessages((prev) => [...prev, { id, role, text, isError }]);
+    setMessages((prev) => [...prev, { id, role, text, ...flags }]);
     return id;
   }
 
@@ -239,7 +257,7 @@ function ChatWidget() {
       if (!res.body) throw new Error("Response không có body để stream.");
 
       // Tạo bong bóng AI rỗng rồi nối chữ vào đó mỗi khi có chunk mới
-      const id = addMessage("ai", "");
+      const id = addMessage("ai", "", { markdown: true });
       aiId = id;
       typer = createTypewriter((text) => updateMessageText(id, text));
       const reader = res.body.getReader();
@@ -264,7 +282,7 @@ function ChatWidget() {
         if (reply.trim()) updateMessageText(aiId, reply);
         else removeMessage(aiId);
       }
-      addMessage("ai", describeError(err), true);
+      addMessage("ai", describeError(err), { isError: true });
     } finally {
       typer?.cancel();
       window.clearTimeout(timeoutId);
@@ -324,15 +342,18 @@ function ChatWidget() {
           aria-live="polite"
           aria-busy={loading}
         >
-          {messages.map((m) => (
-            <div key={m.id} className={`cw-row cw-row--${m.role}`}>
-              <div
-                className={`cw-bubble cw-bubble--${m.role}${m.isError ? " cw-bubble--error" : ""}`}
-              >
-                {m.text}
+          {messages.map((m) => {
+            const View = m.markdown ? MarkdownView : null;
+            return (
+              <div key={m.id} className={`cw-row cw-row--${m.role}`}>
+                <div
+                  className={`cw-bubble cw-bubble--${m.role}${m.isError ? " cw-bubble--error" : ""}${View ? " cw-bubble--md" : ""}`}
+                >
+                  {View ? <View text={m.text} /> : m.text}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Tin cuối vẫn là của user = chưa có token nào về; có chữ chạy rồi thì ẩn "đang suy nghĩ" */}
           {loading && messages[messages.length - 1]?.role === "user" && (
