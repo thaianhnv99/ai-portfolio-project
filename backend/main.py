@@ -93,7 +93,7 @@ def cache_key(prefix: str, message: str) -> str:
     return prefix + hashlib.sha256(normalized.encode()).hexdigest()
 
 
-# Cache chỉ là tối ưu hóa: Redis lỗi/chậm thì ghi log rồi chạy tiếp như cache miss, không làm hỏng /api/chat.
+# Cache chỉ là tối ưu hóa: Redis lỗi/chậm thì ghi log rồi chạy tiếp như cache miss, không làm hỏng /api/chat
 async def cache_get(client, key: str) -> str | None:
     if client is None:
         return None
