@@ -12,25 +12,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from google.genai.errors import APIError
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai._common import GoogleGenerativeAIError
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from contextlib import AsyncExitStack, asynccontextmanager
+from pinecone import AsyncPinecone
 from pydantic import BaseModel, StringConstraints
 from redis.exceptions import RedisError
+import time
 
-load_dotenv()  # nạp GOOGLE_API_KEY (key từ Google AI Studio) từ .env
+load_dotenv()  # nạp GOOGLE_API_KEY (key từ Google AI Studio) và PINECONE_API_KEY từ .env
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
 TOP_K = 4  # số đoạn văn liên quan nhất đưa vào prompt
+# Embedding phải trùng model đã dùng khi ingest (index Pinecone: llama-text-embed-v2, 1024 chiều).
+# EMBEDDING_MODEL = os.getenv("PINECONE_EMBEDDING_MODEL", "llama-text-embed-v2")
+INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "ai-portfolio-index")
+NAMESPACE = os.getenv("PINECONE_NAMESPACE", "__default__")
+TEXT_FIELD = "chunk_text"
 # Tên model Gemini đổi khá nhanh: có thể ghi đè trong .env mà không cần sửa code.
-EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 CHAT_MODEL = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.5-flash-lite")
 EMPTY_REPLY = "Mình chưa tạo được câu trả lời cho câu hỏi này, bạn thử diễn đạt lại nhé."
 
@@ -67,41 +70,6 @@ def load_documents():
 
     return docs_by_file
 
-
-def build_vectorstore():
-    """Cắt nhỏ văn bản -> số hóa bằng Gemini embeddings -> lưu vào FAISS (trong RAM).
-
-    Trả về None nếu thư mục data/ không có nội dung nào để index.
-    """
-    if not (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")):
-        raise RuntimeError(
-            "Thiếu GOOGLE_API_KEY: tạo key tại https://aistudio.google.com/apikey "
-            "rồi thêm dòng GOOGLE_API_KEY=... vào backend/.env"
-        )
-
-    documents = []
-    for name, docs in load_documents().items():
-        for doc in docs:
-            if name.endswith(".pdf"):
-                # PyPDF thường trả về mỗi từ một dòng kèm nhiều khoảng trắng thừa;
-                # gộp lại để mỗi chunk 500 ký tự chứa nội dung thật.
-                doc.page_content = " ".join(doc.page_content.split())
-            documents.append(doc)
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
-    )
-    chunks = [c for c in splitter.split_documents(documents) if c.page_content.strip()]
-    if not chunks:
-        return None
-
-    print(f"[rag] {len(documents)} tài liệu -> {len(chunks)} chunks, đang tạo embeddings...")
-    # Tự dùng RETRIEVAL_DOCUMENT cho đoạn văn và RETRIEVAL_QUERY cho câu hỏi
-    vectorstore = FAISS.from_documents(
-        chunks, GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
-    )
-    print("[rag] Vector store sẵn sàng")
-    return vectorstore
 
 
 def cache_prefix() -> str:
@@ -147,40 +115,44 @@ async def cache_set(client, key: str, value: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Index và tạo client một lần lúc khởi động, các request /api/chat chỉ việc tra cứu.
-    app.state.vectorstore = build_vectorstore()
-    # Không đặt temperature: Google khuyên giữ mặc định (1.0) cho dòng Gemini 3.
-    app.state.chain = (
-        prompt | ChatGoogleGenerativeAI(model=CHAT_MODEL) | StrOutputParser()
-    )
-
-    # from_url chỉ tạo client (kết nối lười), nên ping để biết ngay lúc khởi động Redis có sống không.
-    # Không có REDIS_URL hoặc Redis chết thì server vẫn chạy, chỉ là không có cache.
-    app.state.cache_prefix = cache_prefix()
-    redis_url = os.getenv("REDIS_URL")
-    app.state.redis = (
-        redis.from_url(
-            redis_url,
-            decode_responses=True,
-            socket_connect_timeout=REDIS_TIMEOUT,
-            socket_timeout=REDIS_TIMEOUT,
+    async with AsyncExitStack() as stack:
+        pc = await stack.enter_async_context(
+            AsyncPinecone(api_key=os.environ["PINECONE_API_KEY"])
         )
-        if redis_url
-        else None
-    )
-    if app.state.redis is None:
-        print("[cache] Thiếu REDIS_URL, chạy không có cache")
-    else:
-        try:
-            await app.state.redis.ping()
-            print("[cache] Redis sẵn sàng")
-        except RedisError as exc:
-            print(f"[cache] Chưa kết nối được Redis, sẽ thử lại ở từng request: {exc!r}")
+        index = await pc.index(INDEX_NAME)
+        await stack.enter_async_context(index)
+        app.state.index = index
 
-    yield
+        app.state.chain = (
+            prompt | ChatGoogleGenerativeAI(model=CHAT_MODEL) | StrOutputParser()
+        )
 
-    if app.state.redis is not None:
-        await app.state.redis.aclose()
+        # --- phần Redis giữ nguyên như cũ ---
+        app.state.cache_prefix = cache_prefix()
+        redis_url = os.getenv("REDIS_URL")
+        app.state.redis = (
+            redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=REDIS_TIMEOUT,
+                socket_timeout=REDIS_TIMEOUT,
+            )
+            if redis_url
+            else None
+        )
+        if app.state.redis is None:
+            print("[cache] Thiếu REDIS_URL, chạy không có cache")
+        else:
+            try:
+                await app.state.redis.ping()
+                print("[cache] Redis sẵn sàng")
+            except RedisError as exc:
+                print(f"[cache] Chưa kết nối được Redis, sẽ thử lại ở từng request: {exc!r}")
+
+        yield
+
+        if app.state.redis is not None:
+            await app.state.redis.aclose()
 
 
 app = FastAPI(title="AI Portfolio Backend", lifespan=lifespan)
@@ -236,11 +208,46 @@ async def first_text(stream):
     return None
 
 
+def match_field(match, name: str):
+    """Đọc field từ một kết quả search, chịu được cả dạng object lẫn dict."""
+    if isinstance(match, dict):
+        return match.get(name) or (match.get("fields") or {}).get(name)
+    value = getattr(match, name, None)
+    if value is None:
+        fields = getattr(match, "fields", None)
+        if isinstance(fields, dict):
+            value = fields.get(name)
+    return value
+
+
+# async def search_chunks(index, query: str):
+#     response = await index.documents.search(
+#         namespace=NAMESPACE,
+#         top_k=TOP_K,
+#         score_by=[{"type": "embed", "fields": [TEXT_FIELD], "query": query}],
+#         include_fields=[TEXT_FIELD, "title"],
+#     )
+#     return response.matches
+
+async def search_chunks(index, query: str):
+    start = time.perf_counter()
+    response = await index.documents.search(
+        namespace=NAMESPACE,
+        top_k=TOP_K,
+        score_by=[{"type": "embed", "fields": [TEXT_FIELD], "query": query}],
+        include_fields=[TEXT_FIELD, "title"],
+    )
+    ms = (time.perf_counter() - start) * 1000
+    print(f"[pinecone] '{query[:40]}' -> {len(response.matches)} kết quả, {ms:.0f}ms")
+    for m in response.matches:
+        text = match_field(m, TEXT_FIELD) or ""
+        print(f"[pinecone]   {match_field(m, 'title')}: {text[:60]!r}")
+    return response.matches
+
+
 @app.post("/api/chat")
 async def chat(body: ChatRequest, request: Request):
-    vectorstore = request.app.state.vectorstore
-    if vectorstore is None:
-        raise HTTPException(status_code=503, detail="Chưa có dữ liệu nào trong thư mục data/.")
+    index = request.app.state.index
 
     # Cache hit: trả luôn, bỏ qua cả bước embedding câu hỏi lẫn lời gọi Gemini.
     redis_client = request.app.state.redis
@@ -251,10 +258,10 @@ async def chat(body: ChatRequest, request: Request):
 
     try:
         # Tìm các đoạn văn gần nghĩa nhất với câu hỏi
-        relevant = await vectorstore.asimilarity_search(body.message, k=TOP_K)
+        matches = await search_chunks(index, body.message)
         context = "\n\n---\n\n".join(
-            f"[{Path(doc.metadata.get('source', 'unknown')).name}]\n{doc.page_content}"
-            for doc in relevant
+            f"[{match_field(m, 'title') or 'unknown'}]\n{match_field(m, TEXT_FIELD) or ''}"
+            for m in matches
         )
 
         stream = request.app.state.chain.astream(
