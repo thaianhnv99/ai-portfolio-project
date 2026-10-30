@@ -9,6 +9,7 @@ import { Marquee } from "@/components/shared/Marquee"
 import { StackSection } from "@/components/sections/Stack"
 import { ProjectsSection } from "@/components/sections/Projects"
 import { EducationSection, CertificationsSection } from "@/components/sections/EducationCertifications"
+import { ArticlesSection } from "@/components/sections/Articles"
 import { ContactSection } from "@/components/sections/Contact"
 
 export default function Home() {
@@ -41,6 +42,10 @@ export default function Home() {
 
         {/* 6. Certifications — сертификаты */}
         <CertificationsSection />
+
+        {/* 7. Articles — bài viết */}
+        <ArticlesSection />
+
         <ContactSection />
       </main>
 

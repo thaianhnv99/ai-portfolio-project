@@ -17,7 +17,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai._common import GoogleGenerativeAIError
 from contextlib import AsyncExitStack, asynccontextmanager
-from pinecone import AsyncPinecone
+from pinecone import AsyncPinecone, PineconeError
 from pydantic import BaseModel, StringConstraints
 from redis.exceptions import RedisError
 import time
@@ -271,6 +271,10 @@ async def chat(body: ChatRequest, request: Request):
         # header 200 thì không đổi được status code nữa, nên lỗi Gemini ở bước mở
         # stream (sai key, hết quota...) phải bắt ở đây để vẫn trả được 502.
         first = await first_text(stream)
+    except PineconeError as exc:
+        # Mạng, timeout hay lỗi API của Pinecone đều kế thừa PineconeError
+        print(f"[chat] Lỗi Pinecone: {exc!r}")
+        raise HTTPException(status_code=502, detail="Không truy vấn được dữ liệu portfolio, vui lòng thử lại sau.")
     except (GoogleGenerativeAIError, APIError) as exc:
         print(f"[chat] Lỗi Gemini: {exc!r}")
         raise HTTPException(status_code=502, detail="Không gọi được Gemini, vui lòng thử lại sau.")

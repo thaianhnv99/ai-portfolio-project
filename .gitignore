@@ -8,3 +8,5 @@ backend/chroma_db/
 backend/faiss_index/
 frontend/node_modules/
 frontend/.env.local
+
+frontend1/

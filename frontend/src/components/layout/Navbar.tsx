@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { useTheme } from "next-themes"
+import { usePathname, useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import { useScroll, useMotionValueEvent } from "framer-motion"
 import { profile } from "@/data/profile"
@@ -96,6 +97,8 @@ export function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [activeSection, setActiveSection] = useState("")
   const { scrollY } = useScroll()
+  const pathname = usePathname()
+  const router = useRouter()
 
   useMotionValueEvent(scrollY, "change", (latest) => {
     setAtTop(latest < 10)
@@ -129,6 +132,11 @@ export function Navbar() {
 
   const scrollTo = (href: string) => {
     setMenuOpen(false)
+    // Ngoài trang chủ (vd. trang bài viết) không có các section này: quay về trang chủ rồi cuộn tới đó
+    if (pathname !== "/") {
+      router.push(`/${href}`)
+      return
+    }
     setTimeout(() => {
       const el = document.querySelector(href)
       el?.scrollIntoView({ behavior: "smooth" })

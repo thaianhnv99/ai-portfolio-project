@@ -1,9 +1,13 @@
 "use client"
 
-import { useRef } from "react"
+import { useRef, useState } from "react"
 import { motion, useInView } from "framer-motion"
 import { projects, type Project } from "@/data/projects"
+import { ShowMoreButton } from "@/components/shared/ShowMoreButton"
 import Image from "next/image"
+
+// Hiển thị tối đa số dự án này; nhiều hơn thì có nút "View All Projects".
+const INITIAL_VISIBLE = 4
 
 const placeholderGradients = [
   "from-violet-500/20 via-purple-500/10 to-blue-500/20",
@@ -183,21 +187,30 @@ function SectionHeader() {
 
 // ─── Главный экспорт ──────────────────────────────────────────────────────────
 export function ProjectsSection() {
+  const [showAll, setShowAll] = useState(false)
+
+  const hasMore = projects.length > INITIAL_VISIBLE
+  const visibleProjects = showAll ? projects : projects.slice(0, INITIAL_VISIBLE)
+
   // Разбиваем проекты на пары (строки по 2)
   const rows: Project[][] = []
-  for (let i = 0; i < projects.length; i += 2) {
-    rows.push(projects.slice(i, i + 2))
+  for (let i = 0; i < visibleProjects.length; i += 2) {
+    rows.push(visibleProjects.slice(i, i + 2))
   }
 
   return (
     <section id="projects" className="py-24 px-6">
       <div className="max-w-6xl mx-auto">
         <SectionHeader />
-        <div className="flex flex-col gap-4 pb-24">
+        <div className={`flex flex-col gap-4 ${hasMore && !showAll ? "pb-12" : "pb-24"}`}>
           {rows.map((pair, rowIndex) => (
             <ProjectRow key={rowIndex} pair={pair} rowIndex={rowIndex} />
           ))}
         </div>
+        {/* Кнопка вне sticky-контейнера, иначе последняя sticky-строка перекроет её */}
+        {hasMore && !showAll && (
+          <ShowMoreButton label="View All Projects" onClick={() => setShowAll(true)} />
+        )}
       </div>
     </section>
   )

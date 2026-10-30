@@ -1,5 +1,4 @@
 import {
-  Fragment,
   isValidElement,
   memo,
   useMemo,
@@ -8,74 +7,19 @@ import {
 } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import Prism from "prismjs";
-import type { TokenStream } from "prismjs";
-// Lõi Prism đã có sẵn markup (HTML), css, clike, javascript. Thứ tự import quan trọng
-// vì có phụ thuộc: tsx cần jsx và typescript.
-import "prismjs/components/prism-jsx";
-import "prismjs/components/prism-typescript";
-import "prismjs/components/prism-tsx";
-import "prismjs/components/prism-json";
-import "prismjs/components/prism-bash";
-import "prismjs/components/prism-python";
-import "prismjs/components/prism-yaml";
-import "prismjs/components/prism-sql";
-import "prismjs/themes/prism-tomorrow.css";
-
-// Prism tự gọi highlightAll() sau khi tải để tô màu mọi `code.language-*` trong trang, tức là
-// ghi đè DOM đang do React quản lý (cả code block ở blog) và sẽ gây lỗi khi React cập nhật.
-// Ở đây việc tô màu do component tự làm nên phải tắt.
-Prism.manual = true;
+import { LANGUAGE_CLASS, highlightCode } from "@/lib/highlight";
 
 interface ChatMarkdownProps {
   text: string;
 }
 
-const LANGUAGE_CLASS = /language-(\S+)/;
-
-function getGrammar(lang: string | undefined) {
-  if (!lang) return undefined;
-  const name = lang.toLowerCase();
-  // `languages` còn chứa hàm tiện ích (extend, insertBefore, DFS) và thừa kế Object.prototype,
-  // nên ```extend hay ```constructor không được coi là ngôn ngữ.
-  const grammar = Object.hasOwn(Prism.languages, name)
-    ? Prism.languages[name]
-    : undefined;
-  return typeof grammar === "object" ? grammar : undefined;
-}
-
-// Dựng token của Prism thành React element thay vì chèn HTML (không dùng innerHTML
-// cho nội dung do AI sinh ra)
-function renderTokens(stream: TokenStream): ReactNode {
-  if (typeof stream === "string") return stream;
-  if (Array.isArray(stream)) {
-    return stream.map((token, i) => (
-      <Fragment key={i}>{renderTokens(token)}</Fragment>
-    ));
-  }
-  const aliases = Array.isArray(stream.alias)
-    ? stream.alias
-    : stream.alias
-      ? [stream.alias]
-      : [];
-  return (
-    <span className={["token", stream.type, ...aliases].join(" ")}>
-      {renderTokens(stream.content)}
-    </span>
-  );
-}
-
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
-  const grammar = getGrammar(lang);
-  const tokens = useMemo(
-    () => (grammar ? Prism.tokenize(code, grammar) : null),
-    [code, grammar],
-  );
+  const content = useMemo(() => highlightCode(code, lang), [code, lang]);
   // Luôn có class `language-*` (kể cả khi không rõ ngôn ngữ) để theme Prism tô nền tối cho khối code
   const className = `language-${lang?.toLowerCase() ?? "none"}`;
   return (
     <pre className={className}>
-      <code className={className}>{tokens ? renderTokens(tokens) : code}</code>
+      <code className={className}>{content}</code>
     </pre>
   );
 }

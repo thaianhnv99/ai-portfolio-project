@@ -1,0 +1,21 @@
+# Chặn thư viện và build (BẮT BUỘC)
+node_modules/
+.git/
+dist/
+build/
+.next/
+venv/
+__pycache__/
+
+# Chặn file cấu hình nặng & tài liệu
+.env
+*.log
+*.md
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Chặn thư mục chứa file tĩnh (Ảnh, Video, Fonts)
+public/assets/
+assets/
+images/
